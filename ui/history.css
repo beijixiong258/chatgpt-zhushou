@@ -45,6 +45,12 @@ button:disabled {
   display: grid;
   grid-template-columns: minmax(270px, 30%) minmax(0, 1fr);
 }
+.shell.reading {
+  grid-template-columns: minmax(0, 1fr);
+}
+.shell.reading .library {
+  display: none;
+}
 .library,
 .workspace {
   display: flex;
@@ -167,8 +173,12 @@ button:disabled {
   box-shadow: 0 1px 3px #152b211d;
 }
 .batch {
+  flex-wrap: wrap;
   justify-content: space-between;
   margin: 0 15px 10px;
+}
+.batch button {
+  white-space: nowrap;
 }
 .session-list,
 .timeline {
@@ -200,9 +210,6 @@ button:disabled {
   justify-content: flex-start;
   padding: 10px 13px;
   align-items: flex-start;
-}
-.session.active {
-  background: #e1ede6;
 }
 .session > div {
   min-width: 0;
