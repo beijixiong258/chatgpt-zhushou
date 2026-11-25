@@ -12,20 +12,21 @@
 
 ## 构建
 
-在具备 Rust MSVC、Visual Studio C++ Build Tools、WebView2、Node.js、pnpm 和 PowerShell 7 的 Windows 机器上，从项目根目录执行
+准备 Windows x64、Rust MSVC、Visual Studio C++ Build Tools 与 Windows SDK、Node.js、pnpm 10 和 PowerShell 7。在项目根目录执行
 
 ```powershell
 pnpm install --frozen-lockfile
 pnpm build
 ```
 
-成品位于 `src-tauri\target\release\chatgpt对话助手.exe`。运行 `pnpm typecheck` 检查前端，运行 `pnpm test:unit` 验证 Rust 编辑逻辑。
+单文件程序位于 `outputs/chatgpt对话助手.exe`。它内嵌前端、图标与许可声明。目标电脑需要 Microsoft Edge WebView2 运行时和 Microsoft Visual C++ x64 运行库。
+
+开发时运行 `pnpm dev`。用 `pnpm typecheck` 检查 TypeScript，用 `pnpm test:unit` 运行 Rust 测试。
 
 ## 源码结构
 
-- `src/HistoryEditor.tsx` 管理会话列表、当前草稿和编辑界面。`src/history.ts` 定义前后端交换的数据和四个会话命令。
-- `src-tauri/src/lib.rs` 注册桌面命令，并把文件与数据库操作调度到后台线程。
-- `src-tauri/src/items.rs` 从已读取的 JSON 记录中定位消息与标签，并在内存中应用编辑。`items/prompts.rs` 定位开场指令、标题和对应副本。`items/tests.rs` 存放编辑逻辑的单元测试。
-- `src-tauri/src/store.rs` 负责会话文件、写锁和 SQLite 索引。`store/recycle.rs` 管理整会话回收及中断恢复。
-
-基于 CC Switch 的 Tauri 桌面项目整理，许可证见 LICENSE。
+- `src/desktop.rs` 创建原生 Windows 窗口并调度后台工作。`src/web.rs` 向 WebView2 提供内嵌页面，`src/bridge.rs` 分派会话命令。
+- `src/items.rs` 与 `src/items/` 负责定位和编辑开场指令、对话与工具记录。
+- `src/store.rs` 与 `src/store/` 负责会话文件、SQLite 索引、写锁和回收操作。
+- `ui/` 包含 React 界面和桌面通信接口。`assets/` 存放首页配图、图标和第三方声明。
+- `scripts/` 存放 Windows 发布脚本和依赖许可收集脚本。

@@ -1,5 +1,6 @@
-import logo from "../src-tauri/icons/128x128.png";
-import homeArtwork from "./white-dragon.jpg";
+import { setWindowState } from "./desktop";
+import logo from "../assets/128x128.png";
+import homeArtwork from "../assets/white-dragon.jpg";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   deleteSession,
@@ -108,6 +109,7 @@ export function HistoryEditor() {
     refresh().catch((e) => setError(String(e)));
   }, []);
   useEffect(() => {
+    setWindowState(Boolean(dirty), busy);
     const handle = (ev: BeforeUnloadEvent) => {
       if (dirty) {
         ev.preventDefault();
@@ -116,7 +118,7 @@ export function HistoryEditor() {
     };
     window.addEventListener("beforeunload", handle);
     return () => window.removeEventListener("beforeunload", handle);
-  }, [dirty]);
+  }, [dirty, busy]);
   function guard(action: () => void) {
     if (dirty)
       setDecision({

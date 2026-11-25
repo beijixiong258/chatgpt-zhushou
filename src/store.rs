@@ -12,6 +12,8 @@ use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
 mod recycle;
+#[cfg(test)]
+mod tests;
 
 type Result<T> = std::result::Result<T, String>;
 fn err(e: impl std::fmt::Display) -> String {

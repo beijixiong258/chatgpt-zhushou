@@ -17,7 +17,7 @@
     "noUnusedParameters": true
   },
   "include": [
-    "src/main.tsx",
+    "ui/main.tsx",
     "vite.config.ts"
   ]
 }

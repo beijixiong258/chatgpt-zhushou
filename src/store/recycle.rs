@@ -16,6 +16,22 @@ pub(super) struct Deletion {
     database: PathBuf,
     moves: Vec<(PathBuf, PathBuf)>,
 }
+/// Older batches use a product prefix followed by a local timestamp and a v4 UUID.
+fn is_legacy_batch(name: &str) -> bool {
+    let Some(start) = name.len().checked_sub(52) else {
+        return false;
+    };
+    let Some(tail) = name.get(start..) else {
+        return false;
+    };
+    let Some((stamp, id)) = tail.get(..15).zip(tail.get(16..)) else {
+        return false;
+    };
+    name[..start].ends_with('-')
+        && tail.as_bytes()[15] == b'-'
+        && chrono::NaiveDateTime::parse_from_str(stamp, "%Y%m%d-%H%M%S").is_ok()
+        && Uuid::parse_str(id).is_ok_and(|uuid| uuid.get_version_num() == 4)
+}
 impl Store {
     pub(super) fn prepare_deletion(
         &self,
@@ -153,7 +169,7 @@ impl Store {
             let file_name = child.file_name();
             let name = file_name.to_string_lossy();
             if !child.file_type().map_err(err)?.is_dir()
-                || !(name.starts_with("chatgpt对话助手-") || name.starts_with("CC-Switch-"))
+                || !(name.starts_with("chatgpt对话助手-") || is_legacy_batch(&name))
             {
                 continue;
             }
@@ -162,8 +178,12 @@ impl Store {
             if !journal.is_file() {
                 continue;
             }
-            let batch: Deletion =
-                serde_json::from_reader(File::open(&journal).map_err(err)?).map_err(err)?;
+            let file = File::open(&journal).map_err(err)?;
+            let batch: Deletion = match serde_json::from_reader(file) {
+                Ok(batch) => batch,
+                Err(_) if !name.starts_with("chatgpt对话助手-") => continue,
+                Err(e) => return Err(err(e)),
+            };
             if batch.database != state {
                 continue;
             }

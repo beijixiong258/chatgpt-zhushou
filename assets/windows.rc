@@ -1,0 +1,3 @@
+1 ICON "assets/icon.ico"
+LICENSE RCDATA "LICENSE"
+THIRD_PARTY_NOTICES RCDATA "dist/notices.txt"
