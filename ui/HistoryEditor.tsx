@@ -174,6 +174,8 @@ export function HistoryEditor() {
       ),
     );
   }, [sessions, query]);
+  const allSelected =
+    filtered.length > 0 && filtered.every((session) => batch.has(session.id));
   const groups = useMemo(() => {
     const m = new Map<string, Session[]>();
     for (const s of filtered) {
@@ -491,24 +493,28 @@ export function HistoryEditor() {
         {batchMode && (
           <div className="batch">
             <button
-              disabled={busy}
-              onClick={() => setBatch(new Set(filtered.map((s) => s.id)))}
+              disabled={busy || !filtered.length}
+              onClick={() =>
+                setBatch(new Set(allSelected ? [] : filtered.map((s) => s.id)))
+              }
             >
-              全选结果
+              {allSelected ? "取消全选" : "全选"}
             </button>
-            <button
-              disabled={busy || !batch.size}
-              onClick={() => void unarchive([...batch])}
-            >
-              取消归档所选
-            </button>
-            <button
-              className="danger"
-              disabled={busy || !batch.size}
-              onClick={() => confirmDelete([...batch])}
-            >
-              删除所选（{batch.size}）
-            </button>
+            <div className="batch-actions">
+              <button
+                className="danger"
+                disabled={busy || !batch.size}
+                onClick={() => confirmDelete([...batch])}
+              >
+                删除所选（{batch.size}）
+              </button>
+              <button
+                disabled={busy || !batch.size}
+                onClick={() => void unarchive([...batch])}
+              >
+                取消归档所选
+              </button>
+            </div>
           </div>
         )}
         <div className="session-list">

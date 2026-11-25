@@ -173,12 +173,26 @@ button:disabled {
   box-shadow: 0 1px 3px #152b211d;
 }
 .batch {
-  flex-wrap: wrap;
+  align-items: flex-start;
   justify-content: space-between;
   margin: 0 15px 10px;
 }
+.batch-actions {
+  display: grid;
+  gap: 6px;
+}
 .batch button {
+  border-color: #84978c;
   white-space: nowrap;
+}
+.batch .danger {
+  border-color: #ad7164;
+}
+.batch button:disabled {
+  opacity: 1;
+  border-color: #adbcb3;
+  color: #78857e;
+  background: #edf1ee;
 }
 .session-list,
 .timeline {
