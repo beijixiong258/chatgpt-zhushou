@@ -12,8 +12,7 @@ body {
 }
 button,
 input,
-textarea,
-select {
+textarea {
   font: inherit;
   color: inherit;
 }
@@ -33,7 +32,6 @@ button:hover:not(:disabled) {
 }
 button:focus-visible,
 input:focus-visible,
-select:focus-visible,
 textarea:focus-visible {
   outline: 2px solid #2d7766;
   outline-offset: 1px;
@@ -152,12 +150,6 @@ button:disabled {
 }
 .filters {
   margin: 0 17px 12px;
-  justify-content: space-between;
-}
-.filters select {
-  border: 0;
-  background: none;
-  font-size: 12px;
 }
 .seg {
   border: 1px solid #dce2df;

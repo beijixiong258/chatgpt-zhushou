@@ -8,7 +8,6 @@ export type Session = {
   cwd: string;
   preview: string;
   updated: number;
-  archived: boolean;
 };
 
 export type Entry = {

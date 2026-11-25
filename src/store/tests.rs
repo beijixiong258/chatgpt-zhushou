@@ -10,17 +10,19 @@ fn interrupted_batch_is_restored_before_the_session_can_be_deleted_again() {
         state: root.join("state.sqlite"),
         trash: root.join("trash"),
     };
-    let sessions = root.join("sessions");
+    let sessions = root.join("archived_sessions");
     fs::create_dir(&sessions).unwrap();
     let id = Uuid::new_v4().to_string();
     let file = sessions.join(format!("rollout-2026-11-25T12-00-00-{id}.jsonl"));
     let content = format!("{}\n", json!({"type":"session_meta","payload":{"id":id}}));
     fs::write(&file, &content).unwrap();
     let db = Connection::open(&store.state).unwrap();
-    db.execute_batch("CREATE TABLE threads(id TEXT PRIMARY KEY, rollout_path TEXT)")
-        .unwrap();
+    db.execute_batch(
+        "CREATE TABLE threads(id TEXT PRIMARY KEY, rollout_path TEXT, archived INTEGER NOT NULL)",
+    )
+    .unwrap();
     db.execute(
-        "INSERT INTO threads VALUES(?,?)",
+        "INSERT INTO threads VALUES(?,?,1)",
         params![id, file.to_str().unwrap()],
     )
     .unwrap();

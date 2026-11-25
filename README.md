@@ -1,6 +1,12 @@
 # chatgpt对话助手
 
-chatgpt对话助手是面向 Windows 版 ChatGPT 的本地 Codex 会话编辑器，主要用于定制续聊上下文。支持按项目或时间查找会话。
+chatgpt对话助手是面向 Windows 版 ChatGPT 的本地 Codex 会话编辑器，用于定制续聊上下文。支持按项目或时间查找已归档会话。
+
+## 下载与运行
+
+下载 Windows x64 单文件程序后双击运行。需要 Microsoft Edge WebView2 运行时和 Microsoft Visual C++ x64 运行库。[下载程序](https://github.com/beijixiong258/chatgpt-zhushou/releases/tag/release)
+
+程序默认读取 `%USERPROFILE%\.codex`。可通过 `CODEX_HOME` 指定 Codex 目录，也可通过 `CODEX_SQLITE_HOME` 或该目录下 `config.toml` 的 `sqlite_home` 指定 SQLite 数据库目录。
 
 ## 定制上下文
 
@@ -12,9 +18,14 @@ chatgpt对话助手是面向 Windows 版 ChatGPT 的本地 Codex 会话编辑器
 
 ## 使用
 
-双击 `chatgpt对话助手.exe` 启动。程序依赖 Microsoft Edge WebView2 运行时，并从本机 Codex 目录读取会话。可通过 `CODEX_HOME` 指定 Codex 目录，也可单独配置 SQLite 数据库目录。
+对话助手只列出已归档会话。打开、保存和删除时均会检查归档状态。
 
-编辑内容先暂存为草稿，点击「保存修改」后写入本地会话历史。若目标会话仍被 ChatGPT 占用，可完整退出 ChatGPT 以释放写锁，保存后再打开原会话。续聊时，客户端可能重新注入当前指令。
+1. 等待目标会话的当前回合或上下文压缩结束，再在 ChatGPT 中将其归档。
+2. 点击对话助手中的「刷新列表」，从「已归档会话」打开目标会话。
+3. 编辑所需内容，点击「保存修改」。
+4. 保存成功后，在 ChatGPT 中取消归档并打开原会话。客户端续聊时可能重新注入当前指令。
+
+保存时会检查会话写锁和历史版本。若会话仍被 ChatGPT 占用，等待其关闭后重试。若历史已经变化，重新打开会话并复核改动后再保存。
 
 「加油白龙娘」按固定的 18 项清单，将当前会话首次提问前匹配的段落标记为待删除。清单包含 13 个系统提示词段落，以及桌面端上下文、权限说明、环境上下文、协作模式配置中的开发者指令和客户端时间上下文。待删除项可逐项撤销。
 
@@ -22,14 +33,16 @@ chatgpt对话助手是面向 Windows 版 ChatGPT 的本地 Codex 会话编辑器
 
 ## 构建
 
-准备 Windows x64、Rust MSVC、Visual Studio C++ Build Tools 与 Windows SDK、Node.js、pnpm 10 和 PowerShell 7。在项目根目录执行
+在 Windows x64 环境准备 Rust MSVC、Visual Studio C++ Build Tools、Windows SDK、Node.js、pnpm 10 和 PowerShell 7。Rust 和 pnpm 的版本以项目配置为准。
+
+在项目根目录执行以下命令。
 
 ```powershell
 pnpm install --frozen-lockfile
 pnpm build
 ```
 
-单文件程序位于 `outputs/chatgpt对话助手.exe`。它内嵌前端、图标与许可声明。目标电脑需要 Microsoft Edge WebView2 运行时和 Microsoft Visual C++ x64 运行库。
+构建产物为 `outputs/chatgpt对话助手.exe`，内嵌前端、图标与许可声明。
 
 开发时运行 `pnpm dev`。用 `pnpm typecheck` 检查 TypeScript，用 `pnpm test:unit` 运行 Rust 测试。
 

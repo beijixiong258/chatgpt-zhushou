@@ -28,7 +28,6 @@ pub struct Session {
     pub cwd: String,
     pub preview: String,
     pub updated: i64,
-    pub archived: bool,
 }
 #[derive(Serialize)]
 pub struct Document {
@@ -96,12 +95,18 @@ impl Store {
             )
             .map_err(err)?;
         let project_id = if has_project_id { "project_id" } else { "NULL" };
-        let mut q = db.prepare(&format!("SELECT id,coalesce(nullif(name,''),nullif(title,''),'未命名会话'),cwd,coalesce(preview,''),updated_at,archived,{project_id} FROM threads ORDER BY updated_at DESC,id")).map_err(err)?;
+        let mut q = db
+            .prepare(&format!(
+                "SELECT id, coalesce(nullif(name,''),nullif(title,''),'未命名会话'),
+                        cwd, coalesce(preview,''), updated_at, {project_id}
+                 FROM threads WHERE archived = 1 ORDER BY updated_at DESC, id"
+            ))
+            .map_err(err)?;
         let result = q
             .query_map([], |r| {
                 let raw: Option<String> = r.get(2)?;
                 let cwd = plain_path(Path::new(raw.as_deref().unwrap_or("")));
-                let id: Option<String> = r.get(6)?;
+                let id: Option<String> = r.get(5)?;
                 let (project, project_name) = project_for(id.as_deref(), &cwd, &projects);
                 Ok(Session {
                     id: r.get(0)?,
@@ -111,7 +116,6 @@ impl Store {
                     cwd,
                     preview: r.get(3)?,
                     updated: r.get(4)?,
-                    archived: r.get(5)?,
                 })
             })
             .map_err(err)?
@@ -132,11 +136,16 @@ impl Store {
     }
     fn current(&self, c: &Connection, id: &str) -> Result<(String, PathBuf)> {
         Uuid::parse_str(id).map_err(err)?;
-        let pointer: String = c
-            .query_row("SELECT rollout_path FROM threads WHERE id=?", [id], |r| {
-                r.get(0)
-            })
+        let (pointer, archived): (String, bool) = c
+            .query_row(
+                "SELECT rollout_path, archived FROM threads WHERE id=?",
+                [id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
             .map_err(err)?;
+        if !archived {
+            return Err("请先在 ChatGPT 中归档此会话".into());
+        }
         let path = Path::new(&pointer);
         let found = if path.is_file() {
             path.to_owned()
@@ -246,7 +255,7 @@ impl Store {
             .map_err(|_| "客户端正在切换会话状态，请稍后重试".to_owned())?;
         let writer = open(dir.join(format!("{id}.lock")))?;
         FileExt::try_lock_exclusive(&writer)
-            .map_err(|_| "此会话仍被 ChatGPT 占用。请卸载会话或退出客户端后再保存。".to_owned())?;
+            .map_err(|_| "此会话仍被 ChatGPT 占用，请等待会话关闭后重试。".to_owned())?;
         Ok((gate, writer))
     }
     pub fn save(&self, id: &str, expected: &str, changes: &[Change]) -> Result<Document> {

@@ -12,7 +12,6 @@ import {
   type SessionDocument,
 } from "./history";
 import {
-  Archive,
   Check,
   ChevronDown,
   ChevronRight,
@@ -86,7 +85,6 @@ export function HistoryEditor() {
   const [doc, setDoc] = useState<SessionDocument | null>(null);
   const [draft, setDraft] = useState<Draft>({});
   const [query, setQuery] = useState("");
-  const [scope, setScope] = useState("全部");
   const [group, setGroup] = useState("项目");
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
@@ -161,14 +159,12 @@ export function HistoryEditor() {
   }
   const filtered = useMemo(() => {
     const term = query.toLocaleLowerCase().trim();
-    return sessions.filter(
-      (s) =>
-        (scope === "全部" || (scope === "已归档") === s.archived) &&
-        [s.title, s.preview, s.project_name, s.cwd, s.id].some((v) =>
-          v.toLocaleLowerCase().includes(term),
-        ),
+    return sessions.filter((s) =>
+      [s.title, s.preview, s.project_name, s.cwd, s.id].some((v) =>
+        v.toLocaleLowerCase().includes(term),
+      ),
     );
-  }, [sessions, query, scope]);
+  }, [sessions, query]);
   const groups = useMemo(() => {
     const m = new Map<string, Session[]>();
     for (const s of filtered) {
@@ -385,7 +381,7 @@ export function HistoryEditor() {
           <strong>chatgpt对话助手</strong>
         </header>
         <div className="list-head">
-          <h1>会话</h1>
+          <h1>已归档会话</h1>
           <span className="count">{sessions.length}</span>
           <div className="grow" />
           <button
@@ -418,15 +414,6 @@ export function HistoryEditor() {
           />
         </div>
         <div className="filters">
-          <select
-            aria-label="归档状态"
-            value={scope}
-            onChange={(e) => setScope(e.target.value)}
-          >
-            {["全部", "未归档", "已归档"].map((x) => (
-              <option key={x}>{x}</option>
-            ))}
-          </select>
           <div className="seg">
             {["项目", "时间"].map((x) => (
               <button
@@ -457,7 +444,11 @@ export function HistoryEditor() {
           </div>
         )}
         <div className="session-list">
-          {!groups.length && <div className="empty-list">没有匹配的会话</div>}
+          {!groups.length && (
+            <div className="empty-list">
+              {sessions.length ? "没有匹配的会话" : "暂无已归档会话"}
+            </div>
+          )}
           {groups.map(([key, ss]) => (
             <div key={key}>
               <button
@@ -496,15 +487,7 @@ export function HistoryEditor() {
                     <div>
                       <strong>{s.title}</strong>
                       <p>{compact(s.preview) || s.id}</p>
-                      <small>
-                        {s.archived && (
-                          <>
-                            <Archive size={11} />
-                            已归档 ·{" "}
-                          </>
-                        )}
-                        {stamp(s.updated)}
-                      </small>
+                      <small>{stamp(s.updated)}</small>
                     </div>
                   </button>
                 ))}
@@ -673,8 +656,7 @@ export function HistoryEditor() {
             <div className="home-copy">
               <h2 id="home-title">白龙娘的会话书房</h2>
               <p>
-                从左侧选一段 ChatGPT
-                本地会话，就能编辑开场提示词、删除消息，或清理工具调用记录。
+                先在 ChatGPT 中归档要编辑的会话，再刷新左侧列表并打开该会话。
               </p>
               <p className="home-save">
                 <Save size={16} aria-hidden="true" />
