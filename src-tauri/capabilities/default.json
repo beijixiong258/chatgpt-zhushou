@@ -1,0 +1,9 @@
+{
+  "identifier": "history-editor",
+  "windows": [
+    "main"
+  ],
+  "permissions": [
+    "core:default"
+  ]
+}
