@@ -12,13 +12,13 @@ import {
   type SessionDocument,
 } from "./history";
 import {
+  ArrowLeft,
   Check,
   ChevronDown,
   ChevronRight,
   CircleAlert,
   Clock3,
   Folder,
-  House,
   ListFilter,
   RefreshCw,
   Save,
@@ -498,11 +498,15 @@ export function HistoryEditor() {
       <section className="workspace">
         {current && (
           <header className="topbar">
-            <button disabled={busy} onClick={() => guard(returnHome)}>
-              <House size={15} aria-hidden="true" /> 首页
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => guard(returnHome)}
+              aria-label="返回首页"
+              title="返回首页"
+            >
+              <ArrowLeft size={18} aria-hidden="true" />
             </button>
-            <ChevronRight size={13} aria-hidden="true" />
-            <span>ChatGPT 本地历史</span>
             <span className="grow" />
             <button
               disabled={busy || loading || !doc}
@@ -533,7 +537,7 @@ export function HistoryEditor() {
                   className="primary"
                   disabled={!doc || busy || loading || !cleanupItems.length}
                   onClick={() => mark(cleanupItems)}
-                  title="按指定的 18 项标记当前会话的开场提示词"
+                  title="标记当前会话开场中匹配清单的提示词"
                 >
                   加油白龙娘
                 </button>
@@ -645,7 +649,7 @@ export function HistoryEditor() {
             </footer>
           </>
         ) : (
-          <main className="home-page" aria-labelledby="home-title">
+          <main className="home-page" aria-label="首页">
             <img
               className="home-art"
               src={homeArtwork}
@@ -654,13 +658,8 @@ export function HistoryEditor() {
               alt="白龙娘在月光下托腮坐在书桌前，桌边卧着一只小白龙"
             />
             <div className="home-copy">
-              <h2 id="home-title">白龙娘的会话书房</h2>
               <p>
-                先在 ChatGPT 中归档要编辑的会话，再刷新左侧列表并打开该会话。
-              </p>
-              <p className="home-save">
-                <Save size={16} aria-hidden="true" />
-                改动先留在草稿里，点「保存修改」后写回。
+                先在 ChatGPT 里把想编辑的会话归档，再回来刷新左侧列表，点开那条会话。我会先把改动留在草稿里，等你点「保存修改」，再写回原会话。
               </p>
               {note && <p role="status">{note}</p>}
             </div>

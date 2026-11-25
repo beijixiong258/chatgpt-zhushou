@@ -1,14 +1,14 @@
 use crate::items::{self, Change, Entry};
 use chrono::Local;
 use fs2::FileExt;
-use rusqlite::{params, Connection, OpenFlags, TransactionBehavior};
+use rusqlite::{params, Connection, OpenFlags, Transaction, TransactionBehavior};
 use serde::Serialize;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File, OpenOptions};
-use std::io::{BufRead, BufReader, BufWriter, Read, Write};
-use std::path::{Path, PathBuf};
+use std::io::{self, BufRead, BufReader, BufWriter, Read, Write};
+use std::path::{Component, Path, PathBuf};
 use uuid::Uuid;
 
 mod recycle;
@@ -98,17 +98,17 @@ impl Store {
         let mut q = db
             .prepare(&format!(
                 "SELECT id, coalesce(nullif(name,''),nullif(title,''),'未命名会话'),
-                        cwd, coalesce(preview,''), updated_at, {project_id}
+                        cwd, coalesce(preview,''), updated_at, {project_id}, rollout_path
                  FROM threads WHERE archived = 1 ORDER BY updated_at DESC, id"
             ))
             .map_err(err)?;
-        let result = q
+        let indexed = q
             .query_map([], |r| {
                 let raw: Option<String> = r.get(2)?;
                 let cwd = plain_path(Path::new(raw.as_deref().unwrap_or("")));
                 let id: Option<String> = r.get(5)?;
                 let (project, project_name) = project_for(id.as_deref(), &cwd, &projects);
-                Ok(Session {
+                let session = Session {
                     id: r.get(0)?,
                     title: r.get(1)?,
                     project,
@@ -116,12 +116,27 @@ impl Store {
                     cwd,
                     preview: r.get(3)?,
                     updated: r.get(4)?,
-                })
+                };
+                Ok((session, r.get::<_, String>(6)?))
             })
             .map_err(err)?
             .collect::<std::result::Result<Vec<_>, _>>()
-            .map_err(err);
-        result
+            .map_err(err)?;
+        drop(q);
+        drop(db);
+
+        let mut sessions = Vec::new();
+        for (session, pointer) in indexed {
+            if matches!(rollout_file(Path::new(&pointer)), Ok(None)) {
+                if let Err(e) = self.prune_missing(&session.id, &pointer) {
+                    // A later refresh can retry without showing the missing session.
+                    eprintln!("无法清理缺失的会话 {}：{e}", session.id);
+                }
+            } else {
+                sessions.push(session);
+            }
+        }
+        Ok(sessions)
     }
     fn checked_path(&self, p: &Path) -> Result<PathBuf> {
         let p = fs::canonicalize(p).map_err(err)?;
@@ -134,7 +149,7 @@ impl Store {
         }
         Ok(p)
     }
-    fn current(&self, c: &Connection, id: &str) -> Result<(String, PathBuf)> {
+    fn archived_pointer(&self, c: &Connection, id: &str) -> Result<String> {
         Uuid::parse_str(id).map_err(err)?;
         let (pointer, archived): (String, bool) = c
             .query_row(
@@ -146,27 +161,72 @@ impl Store {
         if !archived {
             return Err("请先在 ChatGPT 中归档此会话".into());
         }
-        let path = Path::new(&pointer);
-        let found = if path.is_file() {
-            path.to_owned()
-        } else if path.extension().is_some_and(|x| x == "zst") {
-            path.with_extension("")
-        } else {
-            PathBuf::from(format!("{pointer}.zst"))
+        Ok(pointer)
+    }
+    fn resolve_rollout(&self, id: &str, pointer: &str) -> Result<Option<PathBuf>> {
+        let Some(found) = rollout_file(Path::new(pointer)).map_err(err)? else {
+            return Ok(None);
         };
         let actual = self.checked_path(&found)?;
-        if file_ids(&actual).map(|(owner, _)| owner) != Some(id.into()) {
+        if !file_ids(&actual).is_some_and(|(owner, _)| owner == id) {
             return Err("历史文件与会话 ID 不符".into());
         }
+        Ok(Some(actual))
+    }
+    fn current(&self, c: &Connection, id: &str) -> Result<(String, PathBuf)> {
+        let pointer = self.archived_pointer(c, id)?;
+        let actual = self
+            .resolve_rollout(id, &pointer)?
+            .ok_or("会话历史文件不存在，请刷新列表")?;
         Ok((pointer, actual))
+    }
+    fn is_orphaned(&self, id: &str, pointer: &str) -> Result<bool> {
+        let path = PathBuf::from(plain_path(Path::new(pointer)));
+        let managed = ["sessions", "archived_sessions"].iter().any(|name| {
+            let root = PathBuf::from(plain_path(&self.home.join(name)));
+            path.strip_prefix(root)
+                .is_ok_and(|tail| tail.components().all(|c| matches!(c, Component::Normal(_))))
+        });
+        if !self.home.is_dir() || !managed || !file_ids(&path).is_some_and(|(owner, _)| owner == id)
+        {
+            return Ok(false);
+        }
+        Ok(rollout_file(&path).map_err(err)?.is_none()
+            && !self
+                .files()?
+                .iter()
+                .any(|file| file_ids(file).is_some_and(|(owner, _)| owner == id)))
+    }
+    fn prune_missing(&self, id: &str, pointer: &str) -> Result<()> {
+        let _lock = self.writer(id)?;
+        let mut db = self.db(true)?;
+        let tx = db
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(err)?;
+        let unchanged = tx
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM threads WHERE id=? AND rollout_path=? AND archived=1)",
+                params![id, pointer],
+                |r| r.get::<_, bool>(0),
+            )
+            .map_err(err)?;
+        if unchanged && self.is_orphaned(id, pointer)? {
+            self.delete_with_journal(tx, id, pointer, &[])?;
+        }
+        Ok(())
     }
     fn files(&self) -> Result<Vec<PathBuf>> {
         let mut result = Vec::new();
-        let mut dirs: Vec<_> = ["sessions", "archived_sessions"]
-            .iter()
-            .map(|s| self.home.join(s))
-            .filter(|p| p.is_dir())
-            .collect();
+        let mut dirs = Vec::new();
+        for name in ["sessions", "archived_sessions"] {
+            let root = self.home.join(name);
+            match fs::metadata(&root) {
+                Ok(m) if m.is_dir() => dirs.push(root),
+                Ok(_) => return Err("本机历史目录不是文件夹".into()),
+                Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+                Err(e) => return Err(err(e)),
+            }
+        }
         while let Some(dir) = dirs.pop() {
             for entry in fs::read_dir(dir).map_err(err)? {
                 let e = entry.map_err(err)?;
@@ -348,7 +408,7 @@ impl Store {
             if !referenced(&files, &path)? {
                 let candidates = physical_siblings(&path);
                 self.move_to_trash(&candidates)?;
-                self.clear_projection(&[path])?;
+                self.clear_projection(file_ids(&path).map(|(_, revision)| revision))?;
             }
             Ok(())
         })();
@@ -387,7 +447,13 @@ impl Store {
         let tx = db
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(err)?;
-        let (pointer, path) = self.current(&tx, id)?;
+        let pointer = self.archived_pointer(&tx, id)?;
+        let Some(path) = self.resolve_rollout(id, &pointer)? else {
+            if self.is_orphaned(id, &pointer)? {
+                return self.delete_with_journal(tx, id, &pointer, &[]);
+            }
+            return Err("找不到当前会话文件，请刷新列表".into());
+        };
         if self.load(&path, id)?.1 != revision {
             return Err("会话已变化，请重新打开".into());
         }
@@ -403,17 +469,37 @@ impl Store {
                 return Err("其他会话仍引用这段历史。请先处理依赖它的分支。".into());
             }
         }
-        let batch = self.prepare_deletion(id, &own)?;
+        self.delete_with_journal(tx, id, &pointer, &own)
+    }
+    fn delete_with_journal(
+        &self,
+        tx: Transaction<'_>,
+        id: &str,
+        pointer: &str,
+        files: &[PathBuf],
+    ) -> Result<()> {
+        let batch = self.prepare_deletion(id, pointer, files)?;
         let moved = self.execute_moves(&batch.1)?;
         let result = (|| -> Result<()> {
             let count = tx
                 .execute(
-                    "DELETE FROM threads WHERE id=? AND rollout_path=?",
+                    "DELETE FROM threads WHERE id=? AND rollout_path=? AND archived=1",
                     params![id, pointer],
                 )
                 .map_err(err)?;
             if count != 1 {
                 return Err("删除时会话发生了变化".into());
+            }
+            if tx
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='thread_read_receipts')",
+                    [],
+                    |r| r.get::<_, bool>(0),
+                )
+                .map_err(err)?
+            {
+                tx.execute("DELETE FROM thread_read_receipts WHERE thread_id=?", [id])
+                    .map_err(err)?;
             }
             tx.commit().map_err(err)
         })();
@@ -422,6 +508,7 @@ impl Store {
             return Err(e);
         }
         self.finish_deletion(&batch.0, &batch.1)
+            .map_err(|e| format!("已移除会话，剩余索引将在刷新时重试清理：{e}"))
     }
 }
 fn restore(moved: &[(PathBuf, PathBuf)]) -> Result<()> {
@@ -551,12 +638,33 @@ fn referenced(all: &[PathBuf], candidate: &Path) -> Result<bool> {
     }
     Ok(false)
 }
-fn physical_siblings(p: &Path) -> Vec<PathBuf> {
-    let peer = if p.extension().is_some_and(|s| s == "zst") {
+fn alternate_rollout(p: &Path) -> PathBuf {
+    if p.extension().is_some_and(|s| s == "zst") {
         p.with_extension("")
     } else {
-        PathBuf::from(format!("{}.zst", p.display()))
-    };
+        let mut path = p.as_os_str().to_owned();
+        path.push(".zst");
+        PathBuf::from(path)
+    }
+}
+fn rollout_file(path: &Path) -> io::Result<Option<PathBuf>> {
+    for candidate in [path.to_owned(), alternate_rollout(path)] {
+        match fs::symlink_metadata(&candidate) {
+            Ok(m) if m.is_file() || m.is_symlink() => return Ok(Some(candidate)),
+            Ok(_) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "会话历史路径不是文件",
+                ))
+            }
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(None)
+}
+fn physical_siblings(p: &Path) -> Vec<PathBuf> {
+    let peer = alternate_rollout(p);
     let mut paths = vec![p.to_owned()];
     if peer.is_file() {
         paths.push(peer);

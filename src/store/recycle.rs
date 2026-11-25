@@ -15,6 +15,8 @@ pub(super) struct Deletion {
     id: String,
     database: PathBuf,
     moves: Vec<(PathBuf, PathBuf)>,
+    #[serde(default)]
+    rollout_revision: Option<String>,
 }
 /// Older batches use a product prefix followed by a local timestamp and a v4 UUID.
 fn is_legacy_batch(name: &str) -> bool {
@@ -36,6 +38,7 @@ impl Store {
     pub(super) fn prepare_deletion(
         &self,
         id: &str,
+        pointer: &str,
         files: &[PathBuf],
     ) -> Result<(PathBuf, Deletion)> {
         let dir = self.trash.join(format!(
@@ -57,6 +60,9 @@ impl Store {
             id: id.to_owned(),
             database: fs::canonicalize(&self.state).map_err(err)?,
             moves,
+            rollout_revision: file_ids(Path::new(pointer))
+                .filter(|(owner, _)| owner == id)
+                .map(|(_, revision)| revision),
         };
         let mut file = tempfile::NamedTempFile::new_in(&dir).map_err(err)?;
         serde_json::to_writer(&mut file, &batch).map_err(err)?;
@@ -80,9 +86,9 @@ impl Store {
         }
         Ok(done)
     }
-    pub(super) fn clear_projection(&self, files: &[PathBuf]) -> Result<()> {
+    pub(super) fn clear_projection(&self, ids: impl IntoIterator<Item = String>) -> Result<()> {
         let path = self.state.with_file_name("thread_history_1.sqlite");
-        if !path.is_file() {
+        if !path.try_exists().map_err(err)? {
             return Ok(());
         }
         let mut db =
@@ -90,11 +96,7 @@ impl Store {
         db.busy_timeout(std::time::Duration::from_secs(3))
             .map_err(err)?;
         let tx = db.transaction().map_err(err)?;
-        for id in files
-            .iter()
-            .filter_map(|p| file_ids(p).map(|(_, r)| r))
-            .collect::<HashSet<_>>()
-        {
+        for id in ids.into_iter().collect::<HashSet<_>>() {
             for table in [
                 "thread_items",
                 "thread_turns",
@@ -118,7 +120,7 @@ impl Store {
     }
     fn clear_name(&self, id: &str) -> Result<()> {
         let path = self.home.join("session_index.jsonl");
-        if !path.exists() {
+        if !path.try_exists().map_err(err)? {
             return Ok(());
         }
         let gate = OpenOptions::new()
@@ -129,7 +131,11 @@ impl Store {
             .open(self.home.join("session_index.jsonl.lock"))
             .map_err(err)?;
         FileExt::try_lock_exclusive(&gate).map_err(|_| "会话名称索引正在写入".to_owned())?;
-        let input = fs::read(&path).map_err(err)?;
+        let input = match fs::read(&path) {
+            Ok(bytes) => bytes,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(e) => return Err(err(e)),
+        };
         let mut bytes = Vec::with_capacity(input.len());
         for line in input.split_inclusive(|&x| x == b'\n') {
             if serde_json::from_slice::<Value>(line)
@@ -149,12 +155,14 @@ impl Store {
         Ok(())
     }
     pub(super) fn finish_deletion(&self, dir: &Path, batch: &Deletion) -> Result<()> {
+        let moved_revisions = batch
+            .moves
+            .iter()
+            .filter_map(|(file, _)| file_ids(file).map(|(_, revision)| revision));
         self.clear_projection(
-            &batch
-                .moves
-                .iter()
-                .map(|(p, _)| p.clone())
-                .collect::<Vec<_>>(),
+            std::iter::once(batch.id.clone())
+                .chain(batch.rollout_revision.iter().cloned())
+                .chain(moved_revisions),
         )?;
         self.clear_name(&batch.id)?;
         fs::rename(dir.join("pending.json"), dir.join("files.json")).map_err(err)
@@ -227,8 +235,8 @@ impl Store {
             if exists {
                 restore(&moved)?;
                 fs::rename(journal, dir.join("cancelled.json")).map_err(err)?;
-            } else {
-                self.finish_deletion(&dir, &batch)?;
+            } else if let Err(e) = self.finish_deletion(&dir, &batch) {
+                eprintln!("无法完成会话 {} 的索引清理：{e}", batch.id);
             }
         }
         Ok(())

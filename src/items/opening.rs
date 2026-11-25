@@ -57,8 +57,7 @@ pub(super) fn ends_opening(row: &Value) -> bool {
     }
 }
 
-// The named sections correspond to the user's 13 selected rows in the system prompt.
-const SYSTEM_SECTIONS: [&str; 13] = [
+const SYSTEM_SECTIONS: &[&str] = &[
     "开头",
     "When to ask the user for permission",
     "Autonomy and persistence",
@@ -72,6 +71,19 @@ const SYSTEM_SECTIONS: [&str; 13] = [
     "Formatting rules",
     "Rules for getting work done",
     "Decision Boundary",
+    "Frontend Design Guidance",
+    "Coding Style",
+    "Visualizations",
+    "Other instructions:",
+];
+
+const DEVELOPER_BLOCKS: &[(&str, &str)] = &[
+    ("skills_instructions", "host_skills.instructions"),
+    ("collaboration_mode", "collaboration_mode.instructions"),
+    ("tools", "tools.deferred_namespaces"),
+    ("recommended_plugins", "plugins.recommendations"),
+    ("multi_agent_role", "multi_agent.role_instructions"),
+    ("multi_agent_mode", "multi_agent.mode_instructions"),
 ];
 
 pub(super) fn is_target(row: &Value, loc: &Location, base_text: Option<&str>) -> bool {
@@ -95,25 +107,6 @@ pub(super) fn is_target(row: &Value, loc: &Location, base_text: Option<&str>) ->
         .and_then(|kinds| kinds.get(index))
         .and_then(Value::as_str)
         .unwrap_or("");
-    // Old clients can put several unrelated blocks inside one text chunk.
-    if entry.kind == "setup"
-        && entry.text.lines().any(|line| {
-            [
-                "# AGENTS.md instructions",
-                "<INSTRUCTIONS>",
-                "<skills_instructions>",
-                "<tools>",
-                "<recommended_plugins>",
-                "<collaboration_mode>",
-                "<multi_agent_role>",
-                "<multi_agent_mode>",
-            ]
-            .iter()
-            .any(|prefix| line.trim_start().starts_with(prefix))
-        })
-    {
-        return false;
-    }
     if entry.kind == "system" {
         if row["type"] != "session_meta"
             && source != "model.base_instructions"
@@ -137,7 +130,36 @@ pub(super) fn is_target(row: &Value, loc: &Location, base_text: Option<&str>) ->
     if row["type"] != "response_item" || p["type"] != "message" {
         return false;
     }
-    match (field(p, "role"), label) {
+    let role = field(p, "role");
+    if let Some((_, expected_source)) = DEVELOPER_BLOCKS.iter().find(|(tag, _)| *tag == label) {
+        if role != "developer" {
+            return false;
+        }
+        if source == *expected_source {
+            return true;
+        }
+        // Without a specific source, only select a self-contained tagged block.
+        let text = entry.text.trim();
+        let closing = format!("</{label}>");
+        return matches!(source, "" | "unknown")
+            && prompts::block_label(text, "", role) == label
+            && text
+                .split_once(closing.as_str())
+                .is_some_and(|(_, trailing)| trailing.is_empty());
+    }
+    // Old clients can put several unrelated blocks inside one text chunk.
+    if entry.text.lines().any(|line| {
+        let line = line.trim_start();
+        line.starts_with("# AGENTS.md instructions")
+            || line.starts_with("<INSTRUCTIONS>")
+            || line
+                .strip_prefix('<')
+                .and_then(|rest| rest.split_once('>'))
+                .is_some_and(|(tag, _)| DEVELOPER_BLOCKS.iter().any(|(known, _)| *known == tag))
+    }) {
+        return false;
+    }
+    match (role, label) {
         ("developer", "app-context") => {
             matches!(source, "" | "unknown" | "generic.developer_instructions")
         }

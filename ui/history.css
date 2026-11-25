@@ -385,29 +385,11 @@ button:disabled {
     clamp(18px, 3vh, 36px);
   background: linear-gradient(to top, #181324, #181324e6 70%, #18132400);
 }
-.home-copy h2 {
-  margin: 0 0 8px;
-  font-family: "Noto Serif SC", "Songti SC", "SimSun", serif;
-  font-size: clamp(24px, 2.7vw, 36px);
-  line-height: 1.2;
-  letter-spacing: 0.04em;
-}
 .home-copy p {
   max-width: 46em;
   margin: 0;
   font-size: clamp(14px, 1.25vw, 17px);
   line-height: 1.8;
-}
-.home-copy .home-save {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-top: 10px;
-  font-size: 13px;
-  color: #e5d9f0;
-}
-.home-save svg {
-  flex: none;
 }
 .empty-list {
   color: #768178;
