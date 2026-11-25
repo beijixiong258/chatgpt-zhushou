@@ -649,8 +649,8 @@ export function HistoryEditor() {
             <img
               className="home-art"
               src={homeArtwork}
-              width={1312}
-              height={1199}
+              width={1536}
+              height={1024}
               alt="白龙娘在月光下托腮坐在书桌前，桌边卧着一只小白龙"
             />
             <div className="home-copy">
