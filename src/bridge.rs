@@ -14,6 +14,10 @@ enum Operation {
         revision: String,
         changes: Vec<Change>,
     },
+    HistoryUnarchive {
+        id: String,
+        revision: String,
+    },
     HistoryDelete {
         id: String,
         revision: String,
@@ -37,6 +41,10 @@ impl Request {
                 revision,
                 changes,
             } => Ok(json!(store.save(&id, &revision, &changes)?)),
+            Operation::HistoryUnarchive { id, revision } => {
+                store.unarchive(&id, &revision)?;
+                Ok(Value::Null)
+            }
             Operation::HistoryDelete { id, revision } => {
                 store.delete(&id, &revision)?;
                 Ok(Value::Null)

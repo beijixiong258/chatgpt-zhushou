@@ -42,6 +42,10 @@ export function saveSession(id: string, revision: string, changes: Change[]) {
   return invoke<SessionDocument>("history_save", { id, revision, changes });
 }
 
+export function unarchiveSession(id: string, revision: string) {
+  return invoke<void>("history_unarchive", { id, revision });
+}
+
 export function deleteSession(id: string, revision: string) {
   return invoke<void>("history_delete", { id, revision });
 }

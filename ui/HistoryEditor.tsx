@@ -7,11 +7,13 @@ import {
   listSessions,
   openSession,
   saveSession,
+  unarchiveSession,
   type Entry,
   type Session,
   type SessionDocument,
 } from "./history";
 import {
+  ArchiveRestore,
   ArrowLeft,
   Check,
   ChevronDown,
@@ -102,6 +104,13 @@ export function HistoryEditor() {
   const refresh = async () => {
     const data = await listSessions();
     setSessions(data);
+    setBatch((previous) => {
+      if (!previous.size) return previous;
+      const available = new Set(data.map((session) => session.id));
+      return new Set(
+        [...previous].filter((sessionId) => available.has(sessionId)),
+      );
+    });
   };
   useEffect(() => {
     refresh().catch((e) => setError(String(e)));
@@ -165,6 +174,8 @@ export function HistoryEditor() {
       ),
     );
   }, [sessions, query]);
+  const allSelected =
+    filtered.length > 0 && filtered.every((session) => batch.has(session.id));
   const groups = useMemo(() => {
     const m = new Map<string, Session[]>();
     for (const s of filtered) {
@@ -246,21 +257,73 @@ export function HistoryEditor() {
       setBusy(false);
     }
   }
+  function unselectSession(sessionId: string) {
+    setBatch((prev) => {
+      const next = new Set(prev);
+      next.delete(sessionId);
+      return next;
+    });
+  }
+  async function sessionRevision(sessionId: string) {
+    if (sessionId === id && doc) return doc.revision;
+    return (await openSession(sessionId)).revision;
+  }
+  async function unarchive(ids: string[]) {
+    if (!ids.length || busy || loading) return;
+    if (dirty) {
+      setError("请先保存修改，再取消归档。");
+      return;
+    }
+    setBusy(true);
+    setError("");
+    setNote("正在取消归档…");
+    const restored = new Set<string>();
+    const failures: string[] = [];
+    try {
+      for (const sessionId of ids) {
+        try {
+          const revision = await sessionRevision(sessionId);
+          await unarchiveSession(sessionId, revision);
+          restored.add(sessionId);
+          unselectSession(sessionId);
+        } catch (e) {
+          const title =
+            sessions.find((session) => session.id === sessionId)?.title ?? sessionId;
+          failures.push(`${title}：${String(e)}`);
+        }
+      }
+      if (restored.has(id)) returnHome();
+      if (restored.size) {
+        setSessions((previous) =>
+          previous.filter((session) => !restored.has(session.id)),
+        );
+      }
+      setNote(
+        restored.size
+          ? `已取消归档 ${restored.size} 个会话，可以回到 ChatGPT 继续对话。`
+          : "",
+      );
+      const messages = failures.length
+        ? [`有 ${failures.length} 个会话取消归档失败。${failures[0]}`]
+        : [];
+      await refresh().catch((e) => {
+        messages.push("刷新列表失败：" + String(e));
+      });
+      setError(messages.join(" "));
+    } finally {
+      setBusy(false);
+    }
+  }
   async function remove(ids: string[]) {
     setBusy(true);
     setError("");
     let count = 0;
     try {
       for (const s of ids) {
-        const revision =
-          s === id && doc ? doc.revision : (await openSession(s)).revision;
+        const revision = await sessionRevision(s);
         await deleteSession(s, revision);
         count++;
-        setBatch((prev) => {
-          const n = new Set(prev);
-          n.delete(s);
-          return n;
-        });
+        unselectSession(s);
         if (s === id) returnHome();
       }
       setNote("已移入垃圾桶");
@@ -372,7 +435,7 @@ export function HistoryEditor() {
   }
 
   return (
-    <div className="shell">
+    <div className={"shell" + (current ? " reading" : "")}>
       <aside className="library">
         <header className="brand">
           <span className="brandmark">
@@ -396,6 +459,7 @@ export function HistoryEditor() {
             title="批量选择"
             aria-label="批量选择"
             aria-pressed={batchMode}
+            disabled={busy}
             onClick={() => {
               setBatchMode(!batchMode);
               setBatch(new Set());
@@ -429,18 +493,28 @@ export function HistoryEditor() {
         {batchMode && (
           <div className="batch">
             <button
-              disabled={busy}
-              onClick={() => setBatch(new Set(filtered.map((s) => s.id)))}
+              disabled={busy || !filtered.length}
+              onClick={() =>
+                setBatch(new Set(allSelected ? [] : filtered.map((s) => s.id)))
+              }
             >
-              全选结果
+              {allSelected ? "取消全选" : "全选"}
             </button>
-            <button
-              className="danger"
-              disabled={busy || !batch.size}
-              onClick={() => confirmDelete([...batch])}
-            >
-              删除所选（{batch.size}）
-            </button>
+            <div className="batch-actions">
+              <button
+                className="danger"
+                disabled={busy || !batch.size}
+                onClick={() => confirmDelete([...batch])}
+              >
+                删除所选（{batch.size}）
+              </button>
+              <button
+                disabled={busy || !batch.size}
+                onClick={() => void unarchive([...batch])}
+              >
+                取消归档所选
+              </button>
+            </div>
           </div>
         )}
         <div className="session-list">
@@ -471,8 +545,9 @@ export function HistoryEditor() {
                 ss.map((s) => (
                   <button
                     key={s.id}
-                    className={"session" + (id === s.id ? " active" : "")}
+                    className="session"
                     disabled={busy}
+                    aria-pressed={batchMode ? batch.has(s.id) : undefined}
                     onClick={() =>
                       batchMode
                         ? setBatch((prev) => toggle(prev, s.id))
@@ -508,6 +583,14 @@ export function HistoryEditor() {
               <ArrowLeft size={18} aria-hidden="true" />
             </button>
             <span className="grow" />
+            <button
+              type="button"
+              disabled={busy || loading || !doc}
+              onClick={() => void unarchive([id])}
+            >
+              <ArchiveRestore size={14} aria-hidden="true" />
+              取消归档
+            </button>
             <button
               disabled={busy || loading || !doc}
               className="quiet-danger"

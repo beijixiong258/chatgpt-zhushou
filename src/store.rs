@@ -14,6 +14,7 @@ use uuid::Uuid;
 mod recycle;
 #[cfg(test)]
 mod tests;
+mod unarchive;
 
 type Result<T> = std::result::Result<T, String>;
 fn err(e: impl std::fmt::Display) -> String {
@@ -149,15 +150,17 @@ impl Store {
         }
         Ok(p)
     }
-    fn archived_pointer(&self, c: &Connection, id: &str) -> Result<String> {
+    fn thread_location(&self, c: &Connection, id: &str) -> Result<(String, bool)> {
         Uuid::parse_str(id).map_err(err)?;
-        let (pointer, archived): (String, bool) = c
-            .query_row(
-                "SELECT rollout_path, archived FROM threads WHERE id=?",
-                [id],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            )
-            .map_err(err)?;
+        c.query_row(
+            "SELECT rollout_path, archived FROM threads WHERE id=?",
+            [id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .map_err(err)
+    }
+    fn archived_pointer(&self, c: &Connection, id: &str) -> Result<String> {
+        let (pointer, archived) = self.thread_location(c, id)?;
         if !archived {
             return Err("请先在 ChatGPT 中归档此会话".into());
         }
@@ -296,6 +299,46 @@ impl Store {
             entries: items::entries(&rows),
             notice: None,
         })
+    }
+    pub fn unarchive(&self, id: &str, revision: &str) -> Result<()> {
+        let (pointer, archived) = self.thread_location(&self.db(false)?, id)?;
+        if !archived {
+            return self.verify_active(id, &pointer);
+        }
+        let path = self
+            .resolve_rollout(id, &pointer)?
+            .ok_or("会话历史文件不存在，请刷新列表")?;
+        if self.load(&path, id)?.1 != revision {
+            return Err("会话已变化，请重新打开".into());
+        }
+
+        // Let Codex coordinate the move and its database update using its own locks.
+        let output = unarchive::run(self, id)?;
+        let (pointer, archived) = self.thread_location(&self.db(false)?, id)?;
+        let restored = if archived {
+            Err("Codex 尚未更新会话的归档状态".into())
+        } else {
+            self.verify_active(id, &pointer)
+        };
+        if restored.is_ok() || output.status.success() {
+            return restored;
+        }
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let detail = stderr.lines().find(|line| !line.trim().is_empty());
+        Err(format!(
+            "取消归档失败：{}",
+            detail.unwrap_or("Codex 未返回错误详情")
+        ))
+    }
+    fn verify_active(&self, id: &str, pointer: &str) -> Result<()> {
+        let path = self
+            .resolve_rollout(id, pointer)?
+            .ok_or("取消归档后找不到会话历史，请在 ChatGPT 中查看")?;
+        let active = fs::canonicalize(self.home.join("sessions")).map_err(err)?;
+        if !path.starts_with(active) {
+            return Err("会话历史尚未回到普通会话目录，请在 ChatGPT 中查看".into());
+        }
+        Ok(())
     }
     fn writer(&self, id: &str) -> Result<(File, File)> {
         Uuid::parse_str(id).map_err(err)?;
