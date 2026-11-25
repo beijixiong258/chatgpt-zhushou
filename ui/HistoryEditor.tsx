@@ -7,11 +7,13 @@ import {
   listSessions,
   openSession,
   saveSession,
+  unarchiveSession,
   type Entry,
   type Session,
   type SessionDocument,
 } from "./history";
 import {
+  ArchiveRestore,
   ArrowLeft,
   Check,
   ChevronDown,
@@ -246,6 +248,34 @@ export function HistoryEditor() {
       setBusy(false);
     }
   }
+  function unselectSession(sessionId: string) {
+    setBatch((prev) => {
+      const next = new Set(prev);
+      next.delete(sessionId);
+      return next;
+    });
+  }
+  async function unarchive() {
+    if (!doc || busy || loading) return;
+    if (dirty) {
+      setError("请先保存修改，再取消归档。");
+      return;
+    }
+    setBusy(true);
+    setError("");
+    try {
+      await unarchiveSession(id, doc.revision);
+      setSessions((previous) => previous.filter((session) => session.id !== id));
+      unselectSession(id);
+      returnHome();
+      setNote("已取消归档，可以回到 ChatGPT 继续对话。");
+      await refresh();
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
   async function remove(ids: string[]) {
     setBusy(true);
     setError("");
@@ -256,11 +286,7 @@ export function HistoryEditor() {
           s === id && doc ? doc.revision : (await openSession(s)).revision;
         await deleteSession(s, revision);
         count++;
-        setBatch((prev) => {
-          const n = new Set(prev);
-          n.delete(s);
-          return n;
-        });
+        unselectSession(s);
         if (s === id) returnHome();
       }
       setNote("已移入垃圾桶");
@@ -508,6 +534,14 @@ export function HistoryEditor() {
               <ArrowLeft size={18} aria-hidden="true" />
             </button>
             <span className="grow" />
+            <button
+              type="button"
+              disabled={busy || loading || !doc}
+              onClick={() => void unarchive()}
+            >
+              <ArchiveRestore size={14} aria-hidden="true" />
+              取消归档
+            </button>
             <button
               disabled={busy || loading || !doc}
               className="quiet-danger"
