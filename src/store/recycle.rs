@@ -1,12 +1,11 @@
 use super::{err, file_ids, restore, Result, Store};
-use chrono::Local;
 use fs2::FileExt;
 use rusqlite::{Connection, OpenFlags};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashSet;
 use std::fs::{self, File, OpenOptions};
-use std::io::Write;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
@@ -18,6 +17,15 @@ pub(super) struct Deletion {
     #[serde(default)]
     rollout_revision: Option<String>,
 }
+
+fn staged_path(from: &Path, batch_id: &str) -> Result<PathBuf> {
+    let name = from
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or("历史文件名不完整")?;
+    Ok(from.with_file_name(format!(".{name}.{batch_id}.deleting")))
+}
+
 /// Older batches use a product prefix followed by a local timestamp and a v4 UUID.
 fn is_legacy_batch(name: &str) -> bool {
     let Some(start) = name.len().checked_sub(52) else {
@@ -35,25 +43,26 @@ fn is_legacy_batch(name: &str) -> bool {
         && Uuid::parse_str(id).is_ok_and(|uuid| uuid.get_version_num() == 4)
 }
 impl Store {
+    pub(super) fn deletion_dir(&self) -> PathBuf {
+        self.home.join(".chatgpt-dialog-assistant-deletions")
+    }
+
     pub(super) fn prepare_deletion(
         &self,
         id: &str,
         pointer: &str,
         files: &[PathBuf],
     ) -> Result<(PathBuf, Deletion)> {
-        let dir = self.trash.join(format!(
-            "chatgpt对话助手-{}-{}",
-            Local::now().format("%Y%m%d-%H%M%S"),
-            Uuid::new_v4()
-        ));
-        fs::create_dir_all(&dir).map_err(err)?;
-        let mut moves = vec![];
+        let batch_id = Uuid::new_v4().to_string();
+        let dir = self.deletion_dir().join(&batch_id);
+        let mut moves = Vec::with_capacity(files.len());
         for p in files {
             let from = self.checked_path(p)?;
-            let target = dir.join(from.file_name().ok_or("历史文件名不完整")?);
-            if moves.iter().any(|(_, t)| t == &target) {
-                return Err("回收站目标文件重名".into());
+            if !file_ids(&from).is_some_and(|(owner, _)| owner == id) {
+                return Err("历史文件与会话 ID 不符".into());
             }
+            // Keep the staged file on the same volume until the database commits.
+            let target = staged_path(&from, &batch_id)?;
             moves.push((from, target));
         }
         let batch = Deletion {
@@ -64,6 +73,7 @@ impl Store {
                 .filter(|(owner, _)| owner == id)
                 .map(|(_, revision)| revision),
         };
+        fs::create_dir_all(&dir).map_err(err)?;
         let mut file = tempfile::NamedTempFile::new_in(&dir).map_err(err)?;
         serde_json::to_writer(&mut file, &batch).map_err(err)?;
         file.as_file().sync_all().map_err(err)?;
@@ -76,11 +86,11 @@ impl Store {
         for (from, to) in &batch.moves {
             if to.exists() {
                 restore(&done)?;
-                return Err("回收站已有同名文件".into());
+                return Err("暂存会话时遇到同名文件".into());
             }
             if let Err(e) = fs::rename(from, to) {
                 restore(&done)?;
-                return Err(format!("移入回收站失败：{e}"));
+                return Err(format!("暂存待删除会话失败：{e}"));
             }
             done.push((from.clone(), to.clone()));
         }
@@ -154,7 +164,7 @@ impl Store {
         }
         Ok(())
     }
-    pub(super) fn finish_deletion(&self, dir: &Path, batch: &Deletion) -> Result<()> {
+    fn clear_deleted_indexes(&self, batch: &Deletion) -> Result<()> {
         let moved_revisions = batch
             .moves
             .iter()
@@ -164,21 +174,50 @@ impl Store {
                 .chain(batch.rollout_revision.iter().cloned())
                 .chain(moved_revisions),
         )?;
-        self.clear_name(&batch.id)?;
-        fs::rename(dir.join("pending.json"), dir.join("files.json")).map_err(err)
+        self.clear_name(&batch.id)
     }
+
+    pub(super) fn remove_deletion_journal(&self, dir: &Path) -> Result<()> {
+        fs::remove_file(dir.join("pending.json")).map_err(err)?;
+        let _ = fs::remove_dir(dir);
+        Ok(())
+    }
+
+    pub(super) fn finish_permanent_deletion(&self, dir: &Path, batch: &Deletion) -> Result<()> {
+        for (_, staged) in &batch.moves {
+            match fs::remove_file(staged) {
+                Ok(()) => {}
+                Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+                Err(e) => return Err(err(e)),
+            }
+        }
+        self.clear_deleted_indexes(batch)?;
+        self.remove_deletion_journal(dir)
+    }
+
     pub(super) fn recover_deletions(&self) -> Result<()> {
-        if !self.trash.is_dir() {
+        self.recover_batches(&self.deletion_dir(), true)?;
+        if let Some(trash) = &self.legacy_trash {
+            self.recover_batches(trash, false)?;
+        }
+        Ok(())
+    }
+
+    fn recover_batches(&self, root: &Path, permanent: bool) -> Result<()> {
+        if !root.is_dir() {
             return Ok(());
         }
         let state = fs::canonicalize(&self.state).map_err(err)?;
-        for child in fs::read_dir(&self.trash).map_err(err)? {
+        for child in fs::read_dir(root).map_err(err)? {
             let child = child.map_err(err)?;
             let file_name = child.file_name();
             let name = file_name.to_string_lossy();
-            if !child.file_type().map_err(err)?.is_dir()
-                || !(name.starts_with("chatgpt对话助手-") || is_legacy_batch(&name))
-            {
+            let recognized = if permanent {
+                Uuid::parse_str(&name).is_ok_and(|id| id.get_version_num() == 4)
+            } else {
+                name.starts_with("chatgpt对话助手-") || is_legacy_batch(&name)
+            };
+            if !recognized || !child.file_type().map_err(err)?.is_dir() {
                 continue;
             }
             let dir = child.path();
@@ -186,10 +225,14 @@ impl Store {
             if !journal.is_file() {
                 continue;
             }
-            let file = File::open(&journal).map_err(err)?;
+            let file = match File::open(&journal) {
+                Ok(file) => file,
+                Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
+                Err(e) => return Err(err(e)),
+            };
             let batch: Deletion = match serde_json::from_reader(file) {
                 Ok(batch) => batch,
-                Err(_) if !name.starts_with("chatgpt对话助手-") => continue,
+                Err(_) if !permanent && !name.starts_with("chatgpt对话助手-") => continue,
                 Err(e) => return Err(err(e)),
             };
             if batch.database != state {
@@ -201,7 +244,7 @@ impl Store {
             if !journal.exists() {
                 continue;
             }
-            // Only recover direct files from this recycle operation to managed session roots.
+            // Only recover files owned by this session at the recorded, managed paths.
             let roots: Vec<_> = ["sessions", "archived_sessions"]
                 .iter()
                 .filter_map(|s| fs::canonicalize(self.home.join(s)).ok())
@@ -209,19 +252,22 @@ impl Store {
             let mut moved = vec![];
             for (from, to) in &batch.moves {
                 let parent = from.parent().ok_or("缺少会话目录")?;
-                if !roots
-                    .iter()
-                    .any(|p| fs::canonicalize(parent).is_ok_and(|dir| dir.starts_with(p)))
+                let real_parent = fs::canonicalize(parent).map_err(err)?;
+                let target_matches = if permanent {
+                    real_parent.as_path() == parent && to == &staged_path(from, &name)?
+                } else {
+                    to.parent() == Some(dir.as_path()) && to.file_name() == from.file_name()
+                };
+                if !roots.iter().any(|root| real_parent.starts_with(root))
                     || file_ids(from).is_none_or(|(id, _)| id != batch.id)
-                    || to.parent() != Some(dir.as_path())
-                    || to.file_name() != from.file_name()
+                    || !target_matches
                 {
-                    return Err("回收记录的路径不匹配".into());
+                    return Err("删除记录的路径不匹配".into());
                 }
                 if to.is_file() && !from.exists() {
                     moved.push((from.clone(), to.clone()));
                 } else if to.exists() && from.exists() {
-                    return Err("回收操作遇到重名文件，请保留两份文件".into());
+                    return Err("恢复删除操作时遇到重名文件，请保留两份文件".into());
                 }
             }
             let db = self.db(false)?;
@@ -234,9 +280,21 @@ impl Store {
                 .map_err(err)?;
             if exists {
                 restore(&moved)?;
-                fs::rename(journal, dir.join("cancelled.json")).map_err(err)?;
-            } else if let Err(e) = self.finish_deletion(&dir, &batch) {
-                eprintln!("无法完成会话 {} 的索引清理：{e}", batch.id);
+                if permanent {
+                    self.remove_deletion_journal(&dir)?;
+                } else {
+                    fs::rename(journal, dir.join("cancelled.json")).map_err(err)?;
+                }
+            } else {
+                let result = if permanent {
+                    self.finish_permanent_deletion(&dir, &batch)
+                } else {
+                    self.clear_deleted_indexes(&batch)
+                        .and_then(|()| fs::rename(journal, dir.join("files.json")).map_err(err))
+                };
+                if let Err(e) = result {
+                    eprintln!("无法完成会话 {} 的删除清理：{e}", batch.id);
+                }
             }
         }
         Ok(())

@@ -8,7 +8,7 @@ fn interrupted_batch_is_restored_before_the_session_can_be_deleted_again() {
     let store = Store {
         home: root.to_owned(),
         state: root.join("state.sqlite"),
-        trash: root.join("trash"),
+        legacy_trash: Some(root.join("trash")),
     };
     let sessions = root.join("archived_sessions");
     fs::create_dir(&sessions).unwrap();
@@ -29,7 +29,9 @@ fn interrupted_batch_is_restored_before_the_session_can_be_deleted_again() {
 
     // Simulate the interruption after moving a file but before committing the index change.
     let dir = store
-        .trash
+        .legacy_trash
+        .as_ref()
+        .unwrap()
         .join(format!("previous-name-20261125-120000-{}", Uuid::new_v4()));
     fs::create_dir_all(&dir).unwrap();
     let moved = dir.join(file.file_name().unwrap());
@@ -42,17 +44,27 @@ fn interrupted_batch_is_restored_before_the_session_can_be_deleted_again() {
     assert_eq!(fs::read_to_string(&file).unwrap(), content);
     assert!(dir.join("cancelled.json").is_file());
 
+    // The new journal also restores a staged file if the index still exists.
+    let pointer = file.to_str().unwrap();
+    let (pending, batch) = store
+        .prepare_deletion(&id, pointer, std::slice::from_ref(&file))
+        .unwrap();
+    store.execute_moves(&batch).unwrap();
+    assert!(!file.exists());
+    store.recover_deletions().unwrap();
+    assert_eq!(fs::read_to_string(&file).unwrap(), content);
+    assert!(!pending.exists());
+
     let revision = store.open(&id).unwrap().revision;
     store.delete(&id, &revision).unwrap();
     assert!(!file.exists());
     assert!(store.open(&id).is_err());
-    let batch = fs::read_dir(&store.trash)
-        .unwrap()
-        .map(|e| e.unwrap().path())
-        .find(|p| p.join("files.json").is_file())
-        .unwrap();
+    assert!(fs::read_dir(&sessions).unwrap().next().is_none());
+    assert!(fs::read_dir(store.deletion_dir()).unwrap().next().is_none());
     assert_eq!(
-        fs::read_to_string(batch.join(file.file_name().unwrap())).unwrap(),
-        content
+        fs::read_dir(store.legacy_trash.as_ref().unwrap())
+            .unwrap()
+            .count(),
+        1
     );
 }

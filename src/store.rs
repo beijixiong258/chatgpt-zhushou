@@ -40,7 +40,7 @@ pub struct Document {
 pub struct Store {
     home: PathBuf,
     state: PathBuf,
-    trash: PathBuf,
+    legacy_trash: Option<PathBuf>,
 }
 impl Store {
     pub fn local() -> Result<Self> {
@@ -59,11 +59,13 @@ impl Store {
             .map(|p| if p.is_absolute() { p } else { home.join(p) })
             .unwrap_or_else(|| home.clone())
             .join("state_5.sqlite");
-        let trash = dirs::desktop_dir()
-            .ok_or("无法定位桌面")?
-            .join("智能体回收站")
-            .join("垃圾桶");
-        Ok(Self { home, state, trash })
+        let legacy_trash =
+            dirs::desktop_dir().map(|desktop| desktop.join("智能体回收站").join("垃圾桶"));
+        Ok(Self {
+            home,
+            state,
+            legacy_trash,
+        })
     }
     fn db(&self, write: bool) -> Result<Connection> {
         Connection::open_with_flags(
@@ -441,7 +443,7 @@ impl Store {
         })();
         if let Err(e) = result {
             // Only our unpublished version is eligible for cleanup here.
-            self.move_to_trash(&[new_path])?;
+            fs::remove_file(new_path).map_err(err)?;
             return Err(e);
         }
         // A new rollout id gives ChatGPT a fresh pagination projection on its first read.
@@ -449,8 +451,20 @@ impl Store {
         let cleanup = (|| -> Result<()> {
             let files = self.files()?;
             if !referenced(&files, &path)? {
-                let candidates = physical_siblings(&path);
-                self.move_to_trash(&candidates)?;
+                let versions = physical_siblings(&path);
+                let paths = versions
+                    .iter()
+                    .map(|p| {
+                        let checked = self.checked_path(p)?;
+                        if file_ids(&checked) != file_ids(p) {
+                            return Err("旧版本历史文件与会话 ID 不符".into());
+                        }
+                        Ok(checked)
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                for old in paths {
+                    fs::remove_file(old).map_err(err)?;
+                }
                 self.clear_projection(file_ids(&path).map(|(_, revision)| revision))?;
             }
             Ok(())
@@ -460,29 +474,6 @@ impl Store {
             doc.notice = Some(format!("会话已保存，旧版本清理未完成：{e}"));
         }
         Ok(doc)
-    }
-    fn move_to_trash(&self, files: &[PathBuf]) -> Result<Vec<(PathBuf, PathBuf)>> {
-        let target = self.trash.join(format!(
-            "chatgpt对话助手-{}-{}",
-            Local::now().format("%Y%m%d-%H%M%S"),
-            Uuid::new_v4()
-        ));
-        fs::create_dir_all(&target).map_err(err)?;
-        let mut moved: Vec<(PathBuf, PathBuf)> = vec![];
-        for path in files {
-            let src = self.checked_path(path)?;
-            let dest = target.join(src.file_name().ok_or("无效的历史文件名")?);
-            if dest.exists() {
-                restore(&moved)?;
-                return Err("回收目录存在同名文件".into());
-            }
-            if let Err(e) = fs::rename(&src, &dest) {
-                restore(&moved)?;
-                return Err(format!("移入回收站失败：{e}"));
-            }
-            moved.push((src, dest));
-        }
-        Ok(moved)
     }
     pub fn delete(&self, id: &str, revision: &str) -> Result<()> {
         let _lock = self.writer(id)?;
@@ -521,8 +512,8 @@ impl Store {
         pointer: &str,
         files: &[PathBuf],
     ) -> Result<()> {
-        let batch = self.prepare_deletion(id, pointer, files)?;
-        let moved = self.execute_moves(&batch.1)?;
+        let (dir, batch) = self.prepare_deletion(id, pointer, files)?;
+        let moved = self.execute_moves(&batch)?;
         let result = (|| -> Result<()> {
             let count = tx
                 .execute(
@@ -548,10 +539,11 @@ impl Store {
         })();
         if let Err(e) = result {
             restore(&moved)?;
+            self.remove_deletion_journal(&dir)?;
             return Err(e);
         }
-        self.finish_deletion(&batch.0, &batch.1)
-            .map_err(|e| format!("已移除会话，剩余索引将在刷新时重试清理：{e}"))
+        self.finish_permanent_deletion(&dir, &batch)
+            .map_err(|e| format!("已移除会话，剩余文件或索引将在刷新时重试清理：{e}"))
     }
 }
 fn restore(moved: &[(PathBuf, PathBuf)]) -> Result<()> {

@@ -317,6 +317,7 @@ export function HistoryEditor() {
   async function remove(ids: string[]) {
     setBusy(true);
     setError("");
+    setNote("");
     let count = 0;
     try {
       for (const s of ids) {
@@ -326,9 +327,9 @@ export function HistoryEditor() {
         unselectSession(s);
         if (s === id) returnHome();
       }
-      setNote("已移入垃圾桶");
+      setNote(`已永久删除 ${count} 个会话。`);
     } catch (e) {
-      setError((count ? "已移入 " + count + " 个会话。" : "") + String(e));
+      setError((count ? `已永久删除 ${count} 个会话。` : "") + String(e));
     } finally {
       await refresh().catch((e) => setError(String(e)));
       setBusy(false);
@@ -337,9 +338,9 @@ export function HistoryEditor() {
   function confirmDelete(ids: string[]) {
     if (!ids.length) return;
     setDecision({
-      title: "将" + ids.length + " 个会话移入垃圾桶？",
-      detail: "会话将从 ChatGPT 的列表中移除，原文件移入桌面的智能体回收站。",
-      button: "移入垃圾桶",
+      title: `永久删除 ${ids.length} 个会话？`,
+      detail: "会话将从 ChatGPT 中移除，历史文件将永久删除。此操作无法撤销。",
+      button: "永久删除",
       action: () => void remove(ids),
     });
   }
