@@ -368,7 +368,8 @@ button:disabled {
   color: #fcf8ff;
   background: #181324;
 }
-.home-art {1 / 2 / 2;
+.home-art {
+  grid-area: 1 / 1 / 2 / 2;
   position: absolute;
   inset: 0;
   z-index: -1;
